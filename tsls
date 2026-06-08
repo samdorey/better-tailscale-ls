@@ -235,6 +235,18 @@ render() {
   local sorted
   sorted=$(printf "%s" "$rows" | LC_ALL=C sort -t"$US" -k1,1r -k3,3)
 
+  # Widen the name column to the longest name actually being printed
+  # (filters mirror the render loop below); floor at 18 so short lists
+  # still look like the old layout.
+  local max_name=18 _io _ih _n _rest
+  while IFS="$US" read -r _io _ih _n _rest; do
+    [[ -z "$_n" ]] && continue
+    if [[ "$SHOW_ALL" != 1 && "$_ih" == "1" ]]; then continue; fi
+    if [[ "$ONLINE_ONLY" == 1 && "$_io" != "1" ]]; then continue; fi
+    if [[ "$OFFLINE_ONLY" == 1 && "$_io" != "0" ]]; then continue; fi
+    (( ${#_n} > max_name )) && max_name=${#_n}
+  done <<< "$sorted"
+
   while IFS="$US" read -r is_online is_hidden name ip os last tag caps; do
     [[ -z "$name" ]] && continue
     if [[ "$SHOW_ALL" != 1 && "$is_hidden" == "1" ]]; then continue; fi
@@ -270,8 +282,7 @@ render() {
       done < <(printf "%s\n" "$caps" | tr ',' '\n')
     fi
 
-    # 15-char ip, 18-char name, 8-char os, status
-    printf "  %s  %s%-15s%s  %s%-18s%s  %s%-8s%s  %s%s%s%s\n" \
+    printf "  %s  %s%-15s%s  %s%-${max_name}s%s  %s%-8s%s  %s%s%s%s\n" \
       "$dot" \
       "$C_DIM"  "$ip"   "$C_RESET" \
       "$C_BOLD" "$name" "$C_RESET" \
