@@ -5,6 +5,7 @@
 #   tsls -o           online only
 #   tsls -f           offline only
 #   tsls -a           also show Mullvad exit nodes and shared-in (sharee) nodes
+#   tsls -t           show ACL tags (tag:foo) as badges
 #   tsls -w [sec]     watch mode (default 5s refresh)
 #   tsls -u           update to the latest release
 #   tsls -V           print version
@@ -17,6 +18,7 @@ REPO="cobanov/better-tailscale-ls"
 ONLINE_ONLY=0
 OFFLINE_ONLY=0
 SHOW_ALL=0
+SHOW_TAGS=0
 WATCH=0
 WATCH_INTERVAL=5
 
@@ -25,6 +27,7 @@ while [[ $# -gt 0 ]]; do
     -o|--online)  ONLINE_ONLY=1; shift ;;
     -f|--offline) OFFLINE_ONLY=1; shift ;;
     -a|--all)     SHOW_ALL=1; shift ;;
+    -t|--tags)    SHOW_TAGS=1; shift ;;
     -w|--watch)
       WATCH=1; shift
       if [[ ${1:-} =~ ^[0-9]+$ ]]; then WATCH_INTERVAL=$1; shift; fi
@@ -167,13 +170,14 @@ render() {
 
   # Build rows separated by \x1f (Unit Separator, non-whitespace so bash
   # `read` won't collapse empty fields the way it does with tabs).
-  # Columns: online<US>hidden<US>name<US>ip<US>os<US>last<US>tag<US>caps
+  # Columns: online<US>hidden<US>name<US>ip<US>os<US>last<US>tag<US>caps<US>acltags
   # `hidden` flags noise we suppress by default without dropping the row:
   # Mullvad-tagged exit nodes and ShareeNode entries (devices owned by
   # users we've shared a node *to* — Tailscale masks these behind the
   # placeholder hostname "device-of-shared-to-user"). "name" is the Tailscale
   # machine name (DNSName before first dot); falls back to HostName.
   # `caps` is a comma-separated list of capability flags: exit-opt, subnets.
+  # `acltags` is the comma-separated raw ACL tag list (tag:foo,tag:bar).
   local US=$'\x1f'
   local rows
   rows=$(printf "%s" "$json" | jq -r --arg us "$US" '
@@ -197,7 +201,8 @@ render() {
         ([
           (if (.ExitNodeOption // false) and (.ExitNode // false | not) then "exit-opt" else empty end),
           (if ((.PrimaryRoutes // []) | length) > 0 then "subnets" else empty end)
-        ] | join(","))
+        ] | join(",")),
+        ((.Tags // []) | join(","))
       ] | join($us)
   ' --arg self "$(printf "%s" "$json" | jq -r '.Self.ID')")
 
@@ -235,19 +240,23 @@ render() {
   local sorted
   sorted=$(printf "%s" "$rows" | LC_ALL=C sort -t"$US" -k1,1r -k3,3)
 
-  # Widen the name column to the longest name actually being printed
-  # (filters mirror the render loop below); floor at 18 so short lists
-  # still look like the old layout.
-  local max_name=18 _io _ih _n _rest
-  while IFS="$US" read -r _io _ih _n _rest; do
+  # Widen the name and status columns to the longest visible value so
+  # the badges (caps, acl tags) line up. Filters mirror the render loop
+  # below. Floors: 18 for name (matches the old fixed layout), 6 for
+  # status ("online"), so short lists don't shrink.
+  local max_name=18 max_status=6 _io _ih _n _ip _os _last _rest _stxt
+  while IFS="$US" read -r _io _ih _n _ip _os _last _rest; do
     [[ -z "$_n" ]] && continue
     if [[ "$SHOW_ALL" != 1 && "$_ih" == "1" ]]; then continue; fi
     if [[ "$ONLINE_ONLY" == 1 && "$_io" != "1" ]]; then continue; fi
     if [[ "$OFFLINE_ONLY" == 1 && "$_io" != "0" ]]; then continue; fi
     (( ${#_n} > max_name )) && max_name=${#_n}
+    if [[ "$_io" == "1" ]]; then _stxt="online"
+    else _stxt="$(human_ago "$_last") ago"; fi
+    (( ${#_stxt} > max_status )) && max_status=${#_stxt}
   done <<< "$sorted"
 
-  while IFS="$US" read -r is_online is_hidden name ip os last tag caps; do
+  while IFS="$US" read -r is_online is_hidden name ip os last tag caps acltags; do
     [[ -z "$name" ]] && continue
     if [[ "$SHOW_ALL" != 1 && "$is_hidden" == "1" ]]; then continue; fi
     if [[ "$ONLINE_ONLY" == 1 && "$is_online" != "1" ]]; then continue; fi
@@ -281,8 +290,15 @@ render() {
         esac
       done < <(printf "%s\n" "$caps" | tr ',' '\n')
     fi
+    if [[ "$SHOW_TAGS" == 1 && -n "$acltags" ]]; then
+      local atag
+      while IFS= read -r atag; do
+        [[ -z "$atag" ]] && continue
+        badge+=" ${C_MAGENTA}[${atag}]${C_RESET}"
+      done < <(printf "%s\n" "$acltags" | tr ',' '\n')
+    fi
 
-    printf "  %s  %s%-15s%s  %s%-${max_name}s%s  %s%-8s%s  %s%s%s%s\n" \
+    printf "  %s  %s%-15s%s  %s%-${max_name}s%s  %s%-8s%s  %s%-${max_status}s%s%s\n" \
       "$dot" \
       "$C_DIM"  "$ip"   "$C_RESET" \
       "$C_BOLD" "$name" "$C_RESET" \
